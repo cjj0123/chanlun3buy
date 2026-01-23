@@ -133,7 +133,6 @@ def main():
     print(f"开始扫描恒生科技指数... (隔离模式)")
     
     results = []
-    # 港股建议减小并发，防止被 Yahoo 屏蔽
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_ticker = {executor.submit(process_stock, t): t for t in hstech_list}
         for future in concurrent.futures.as_completed(future_to_ticker):
@@ -142,13 +141,17 @@ def main():
                 results.append(res)
                 print(f"发现信号 -> {res}")
 
-    print("\n" + "="*50)
-    print(f"扫描完成，符合三买条件个股如下：")
-    if not results:
-        print("暂无匹配个股。")
-    else:
-        for r in sorted(results):
-            print(r)
+    # --- 写入文件部分 ---
+    with open("results.txt", "w", encoding="utf-8") as f:
+        if results:
+            f.write("【缠论30分钟三买选股结果】\n")
+            f.write("="*50 + "\n")
+            f.write("\n".join(sorted(results)))
+            f.write("\n" + "="*50 + "\n")
+            f.write(f"扫描时间: {pd.Timestamp.now()}")
+        else:
+            f.write("今日暂无符合三买条件的个股。")
+    print("结果已写入 results.txt")
 
 if __name__ == "__main__":
     main()
