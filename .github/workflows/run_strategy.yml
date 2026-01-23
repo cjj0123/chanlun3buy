@@ -35,10 +35,11 @@ jobs:
         # 这里以 QQ 邮箱为例，如果是 Gmail 请参考下方说明
         server_address: smtp.gmail.com
         server_port: 465
+        secure: true # Gmail 465 端口必须开启安全连接
         username: ${{secrets.MAIL_USERNAME}}
         password: ${{secrets.MAIL_PASSWORD}}
         subject: 缠论三买选股报告 - 恒生科技 (${{github.run_id}})
-        to: ${{secrets.MAIL_USERNAME}} # 发给自己
+        to: cjj0123@gmail.com # 发给自己
         from: GitHub Actions Strategy
         body: |
           你好，
