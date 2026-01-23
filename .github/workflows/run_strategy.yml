@@ -1,12 +1,17 @@
-name: Chan Strategy Daily Scan
+name: Chan Strategy Web Report
 
 on:
   push:
     branches: [ main ]
   schedule:
-    # 每天周一到周五北京时间晚上 18:00 运行 (UTC 10:00)
     - cron: '0 10 * * 1-5'
   workflow_dispatch: 
+
+# 必须设置权限以允许发布网页
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build:
@@ -24,28 +29,15 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy yfinance akshare
+        pip install pandas numpy yfinance plotly
 
     - name: Run Strategy
       run: python main.py
 
-    - name: Send mail
-      uses: dawidd6/action-send-mail@v3
+    # 将生成的 index.html 发布到 gh-pages 分支
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
       with:
-        # 这里以 QQ 邮箱为例，如果是 Gmail 请参考下方说明
-        server_address: smtp.gmail.com
-        server_port: 465
-        secure: true # Gmail 465 端口必须开启安全连接
-        username: ${{secrets.MAIL_USERNAME}}
-        password: ${{secrets.MAIL_PASSWORD}}
-        subject: 缠论三买选股报告 - 恒生科技 (${{github.run_id}})
-        to: cjj0123@gmail.com # 发给自己
-        from: GitHub Actions Strategy
-        body: |
-          你好，
-          
-          今日恒生科技指数 30分钟 级别缠论三买选股扫描已完成。
-          详细结果请查看附件 results.txt。
-          
-          运行编号: ${{github.run_id}}
-        attachments: results.txt
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          publish_branch: gh-pages  # 网页部署在 gh-pages 分支
