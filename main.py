@@ -132,7 +132,7 @@ def scan_stocks(symbol_list):
 # --- 测试运行 ---
 if __name__ == "__main__":
     # 示例股票池（美股或港股/A股需对应格式）
-    test_list = ["AAPL", "TSLA", "NVDA", "MSFT", "AMD", "GOOGL"]
+    test_list = ["AAPL", "600674.SS", "000001.SZ"]
     
     selected_stocks = scan_stocks(test_list)
     print("\n最终选股结果:", selected_stocks)
