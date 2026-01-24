@@ -4,11 +4,12 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import concurrent.futures
-import datetime
 import sys
 import akshare as ak
 import threading
-import requests
+import copy
+import time
+from datetime import datetime, timedelta  # <--- 关键是这一行
 
 # 全局锁：防止 yfinance 并发下载时的内存交叉污染
 download_lock = threading.Lock()
@@ -242,22 +243,25 @@ def main():
     sorted_keys = sorted(final_results.keys())
 
     # --- 最终网页组装 ---
-    # 头部加载一次 Plotly JS，避免每个图表重复请求和内存溢出
+    # 获取北京时间 (UTC+8)
+    beijing_time = datetime.now() + timedelta(hours=8)
+    beijing_time_str = beijing_time.strftime('%Y-%m-%d %H:%M:%S')
+
     html_start = f"""
     <!DOCTYPE html><html><head><meta charset="utf-8">
     <title>{index_arg} 缠论选股报告</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <style>
-        body{{font-family:'PingFang SC',sans-serif;background:#f0f2f5;padding:20px;margin:0;}}
-        .container{{max-width:1100px;margin:0 auto;}}
-        .card{{background:white;border-radius:12px;margin-bottom:40px;box-shadow:0 4px 15px rgba(0,0,0,0.08);overflow:hidden;}}
-        .card-title{{background:#2c3e50;color:white;padding:15px 25px;font-size:1.3em;font-weight:bold;}}
-        .card-reason{{padding:15px 25px;background:#fff9eb;border-bottom:1px solid #eee;color:#5d4037;line-height:1.6;}}
-        .stats{{text-align:center;padding:30px;color:#666;}}
+        body {{ font-family:'PingFang SC',sans-serif; background:#f0f2f5; padding:20px; margin:0; }}
+        .container {{ max-width:1100px; margin:0 auto; }}
+        .card {{ background:white; border-radius:12px; margin-bottom:40px; box-shadow:0 4px 15px rgba(0,0,0,0.08); overflow:hidden; }}
+        .card-title {{ background:#2c3e50; color:white; padding:15px 25px; font-size:1.3em; font-weight:bold; }}
+        .card-reason {{ padding:15px 25px; background:#fff9eb; border-bottom:1px solid #eee; color:#5d4037; line-height:1.6; }}
+        .stats {{ text-align:center; padding:30px; color:#666; }}
     </style></head><body><div class="container">
     <h1 style="text-align:center;">📈 {index_arg} 缠论三买深度报告</h1>
     <div class="stats">扫描范围: {index_arg} | 样本总量: {total} | 发现买点: {len(final_results)}<br>
-    更新时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
+    更新时间 (北京时间): {beijing_time_str}</div>
     """
 
     with open("index.html", "w", encoding="utf-8") as f:
