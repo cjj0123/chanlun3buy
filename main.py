@@ -10,14 +10,18 @@ import akshare as ak
 import threading
 import requests
 
-# 进度计数锁
-lock = threading.Lock()
+# 全局锁：防止 yfinance 并发下载时的内存交叉污染
+download_lock = threading.Lock()
+# 进度锁
+counter_lock = threading.Lock()
 counter = 0
 
 class ChanStrategy:
-    def __init__(self, symbol, df):
+    def __init__(self, symbol, df_raw):
         self.symbol = symbol
-        self.df = df.copy()
+        # 【隔离1】强制深拷贝数据，确保该实例拥有独立数据副本
+        self.df = df_raw.copy(deep=True)
+        
         self.prepare_indicators()
         self.k_data = pd.DataFrame()
         self.bi = []
@@ -27,15 +31,17 @@ class ChanStrategy:
         self.process_chan()
 
     def prepare_indicators(self):
-        ema12 = self.df['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = self.df['Close'].ewm(span=26, adjust=False).mean()
+        # 计算MACD
+        close = self.df['Close']
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
         self.df['dif'] = ema12 - ema26
         self.df['dea'] = self.df['dif'].ewm(span=9, adjust=False).mean()
         self.df['macd'] = (self.df['dif'] - self.df['dea']) * 2
         self.df['macd_area'] = self.df['macd'].abs()
 
     def clean_inclusion(self):
-        if len(self.df) < 2: return
+        if len(self.df) < 5: return
         k_list = []
         last_k = {'time': self.df.index[0], 'high': self.df.iloc[0]['High'], 'low': self.df.iloc[0]['Low'], 'idx': 0}
         direction = 1 
@@ -62,17 +68,16 @@ class ChanStrategy:
                 nodes.append({'type': 'top', 'val': k.iloc[i]['high'], 'idx': k.iloc[i]['idx'], 'time': k.iloc[i]['time']})
             elif k.iloc[i]['low'] < k.iloc[i-1]['low'] and k.iloc[i]['low'] < k.iloc[i+1]['low']:
                 nodes.append({'type': 'bottom', 'val': k.iloc[i]['low'], 'idx': k.iloc[i]['idx'], 'time': k.iloc[i]['time']})
+        
         bi = []
         for n in nodes:
             if not bi: bi.append(n)
             elif n['type'] != bi[-1]['type']:
                 if abs(n['idx'] - bi[-1]['idx']) >= 3: bi.append(n)
             else:
-                if (n['type'] == 'top' and n['val'] > bi[-1]['val']) or (n['type'] == 'bottom' and n['val'] < bi[-1]['val']): bi[-1] = n
+                if (n['type'] == 'top' and n['val'] > bi[-1]['val']) or (n['type'] == 'bottom' and n['val'] < bi[-1]['val']):
+                    bi[-1] = n
         self.bi = bi
-
-    def get_macd_power(self, start_time, end_time):
-        return self.df.loc[start_time:end_time, 'macd_area'].sum()
 
     def analyze_three_buy(self):
         if len(self.bi) < 5: return
@@ -82,20 +87,22 @@ class ChanStrategy:
             zd = max(min(m1['val'], m2['val']), min(m2['val'], m3['val']))
             if zd >= zg: return
             self.zhongshu = {'zg': zg, 'zd': zd, 'start': m1['time'], 'end': m3['time']}
+            
             b_leave, b_back = self.bi[-2], self.bi[-1]
             if b_back['val'] <= zg: return
             
-            # 修正：使用 self.bi
-            p_leave = self.get_macd_power(self.bi[-3]['time'], self.bi[-2]['time'])
-            p_back = self.get_macd_power(self.bi[-2]['time'], self.bi[-1]['time'])
+            p_leave = self.df.loc[self.bi[-3]['time']:self.bi[-2]['time'], 'macd_area'].sum()
+            p_back = self.df.loc[self.bi[-2]['time']:self.bi[-1]['time'], 'macd_area'].sum()
             power_ratio = p_back / p_leave if p_leave > 0 else 1
+            
             if power_ratio > 0.85: return 
             if self.df.iloc[-1]['Close'] < b_back['val']: return
             
             self.buy_point = b_back
             self.analysis_report = (
-                f"<b>[形态确认]</b> 30min中枢 [{zd:.2f} - {zg:.2f}]。<br>"
-                f"<b>[强度判定]</b> 回踩低点 {b_back['val']:.2f} 站稳上沿。MACD回撤能量比: {power_ratio:.1%}。"
+                f"<b>[中枢区间]</b> {zd:.2f} - {zg:.2f}<br>"
+                f"<b>[三买点位]</b> {b_back['val']:.2f} (不破上沿)<br>"
+                f"<b>[背驰对比]</b> 回调力度 {power_ratio:.1%}"
             )
         except: pass
 
@@ -105,20 +112,32 @@ class ChanStrategy:
         self.analyze_three_buy()
 
     def generate_chart_html(self):
+        """【隔离2】生成带强唯一标识的HTML，防止渲染串位"""
         if not self.buy_point: return None
+        
         fig = make_subplots(rows=2, cols=1, row_heights=[0.65, 0.35], shared_xaxes=True, vertical_spacing=0.03)
+        # K线
         fig.add_trace(go.Candlestick(x=self.df.index, open=self.df['Open'], high=self.df['High'], 
                                      low=self.df['Low'], close=self.df['Close'], name='K线'), row=1, col=1)
-        bi_x = [b['time'] for b in self.bi]; bi_y = [b['val'] for b in self.bi]
-        fig.add_trace(go.Scatter(x=bi_x, y=bi_y, mode='lines+markers', name='笔', line=dict(color='#ffa726', width=2)), row=1, col=1)
+        # 笔
+        if self.bi:
+            bi_x = [b['time'] for b in self.bi]; bi_y = [b['val'] for b in self.bi]
+            fig.add_trace(go.Scatter(x=bi_x, y=bi_y, mode='lines+markers', name='笔', line=dict(color='#ffa726', width=2.5)), row=1, col=1)
+        # 中枢
         if self.zhongshu:
-            fig.add_shape(type="rect", x0=self.zhongshu['start'], y0=self.zhongshu['zd'], x1=self.df.index[-1], y1=self.zhongshu['zg'], 
-                          fillcolor="rgba(239, 83, 80, 0.1)", line_width=0, row=1, col=1)
+            fig.add_shape(type="rect", x0=self.zhongshu['start'], y0=self.zhongshu['zd'], 
+                          x1=self.df.index[-1], y1=self.zhongshu['zg'], 
+                          fillcolor="rgba(239, 83, 80, 0.15)", line_width=0, row=1, col=1)
+        # MACD
         colors = ['#ef5350' if val >= 0 else '#26a69a' for val in self.df['macd']]
-        fig.add_trace(go.Bar(x=self.df.index, y=self.df['macd'], name='MACD柱', marker_color=colors), row=2, col=1)
-        fig.update_layout(template='plotly_white', xaxis_rangeslider_visible=False, height=700, showlegend=False)
-        safe_id = self.symbol.replace('.', '_').replace('-', '_')
-        return fig.to_html(full_html=False, include_plotlyjs=False, div_id=f"chart_{safe_id}")
+        fig.add_trace(go.Bar(x=self.df.index, y=self.df['macd'], name='MACD', marker_color=colors), row=2, col=1)
+        
+        fig.update_layout(title=f"{self.symbol} 缠论分析报告", xaxis_rangeslider_visible=False, 
+                          height=650, template='plotly_white', showlegend=False)
+        
+        # 强制指定 div_id 包含股票代码，彻底杜绝 ID 碰撞
+        safe_id = f"chart_{self.symbol.replace('.', '_').replace('-', '_')}"
+        return fig.to_html(full_html=False, include_plotlyjs=False, div_id=safe_id)
 
 def get_tickers(index_name):
     """适配全市场指数的稳健获取逻辑"""
