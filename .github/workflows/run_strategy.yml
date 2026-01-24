@@ -1,13 +1,21 @@
-name: Chan Strategy Web Report
+name: Chan Strategy Multi-Index Scan
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      index_type:
+        description: '选择要扫描的指数'
+        required: true
+        default: 'HSI'
+        type: choice
+        options:
+          - HSI
+          - SP500
+          - HS300
+          - ZZ500
   schedule:
-    - cron: '0 10 * * 1-5'
-  workflow_dispatch: 
+    - cron: '0 10 * * 1-5' # 每天定时运行默认项
 
-# 必须设置权限以允许发布网页
 permissions:
   contents: write
   pages: write
@@ -16,7 +24,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -27,17 +34,15 @@ jobs:
         python-version: '3.10'
 
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pandas numpy yfinance plotly
+      run: pip install pandas numpy yfinance plotly akshare lxml
 
     - name: Run Strategy
-      run: python main.py
+      # 传入选择的指数参数
+      run: python main.py ${{ github.event.inputs.index_type || 'HSI' }}
 
-    # 将生成的 index.html 发布到 gh-pages 分支
     - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
       with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./
-          publish_branch: gh-pages  # 网页部署在 gh-pages 分支
+          publish_branch: gh-pages
