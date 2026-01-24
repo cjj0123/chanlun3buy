@@ -140,19 +140,27 @@ class ChanStrategy:
 
 # --- 选股逻辑与指数获取保持之前的 get_tickers 和 process_stock 不变 ---
 def get_tickers(index_name):
-    print(f"获取 {index_name} 列表...")
+    print(f"正在获取 {index_name} 成分股列表...")
+    tickers = []
     try:
         if index_name == "HS300":
             df = ak.index_stock_cons(symbol="000300")
-            return [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
         elif index_name == "ZZ500":
             df = ak.index_stock_cons(symbol="000905")
-            return [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
         elif index_name == "HSI":
-            return ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "9888.HK", "9618.HK", "2015.HK", "0981.HK", "1024.HK", "0992.HK"]
+            # 增加一些恒生科技和恒指核心
+            tickers = ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "9888.HK", "9618.HK", "2015.HK", "2382.HK", "0981.HK", "1024.HK", "0992.HK", "2269.HK"]
         elif index_name == "SP500":
-            return ["AAPL", "TSLA", "NVDA", "MSFT", "AMD", "GOOG", "AMZN", "META"]
-    except: return ["0700.HK"]
+            # 示例美股
+            tickers = ["AAPL", "TSLA", "NVDA", "MSFT", "AMD", "GOOG", "AMZN", "META", "NFLX", "AVGO"]
+            
+        # 再次确保返回前去重
+        return list(set(tickers))
+    except Exception as e:
+        print(f"获取列表失败: {e}")
+        return []
 
 def process_stock(symbol):
     try:
