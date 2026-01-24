@@ -196,18 +196,25 @@ def get_tickers(index_name):
 def process_stock(symbol, total):
     global counter
     try:
-        data = yf.download(symbol, period="59d", interval="30m", progress=False, timeout=15)
+        # 【隔离3】下载环节加锁，防止 yfinance 并发冲突导致数据串写
+        with download_lock:
+            data_raw = yf.download(symbol, period="59d", interval="30m", progress=False, timeout=20)
         
-        with lock:
+        with counter_lock:
             counter += 1
             if counter % 10 == 0 or counter == total:
-                print(f"进度: [{counter}/{total}] 正在处理 {symbol}...")
+                print(f"进度: [{counter}/{total}] 已下载 {symbol}")
 
-        if data.empty or len(data) < 40: return None
-        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-        data.index = data.index.tz_localize(None)
+        if data_raw.empty or len(data_raw) < 40: return None
         
-        cs = ChanStrategy(symbol, data)
+        # 整理列名
+        if isinstance(data_raw.columns, pd.MultiIndex):
+            data_raw.columns = data_raw.columns.get_level_values(0)
+        
+        data_raw.index = data_raw.index.tz_localize(None)
+        
+        # 实例化策略（内部执行数据隔离）
+        cs = ChanStrategy(symbol, data_raw)
         if cs.buy_point:
             return {'symbol': symbol, 'html': cs.generate_chart_html(), 'report': cs.analysis_report}
     except: return None
@@ -216,41 +223,60 @@ def process_stock(symbol, total):
 def main():
     global counter
     index_arg = sys.argv[1] if len(sys.argv) > 1 else "HSI"
-    all_tickers = get_tickers(index_arg)
-    total_count = len(all_tickers)
+    tickers = get_tickers(index_arg)
+    total = len(tickers)
     
-    results = []
-    # 增加线程数以应对 SP500 的大量数据
+    # 结果字典：Key=股票代码，确保每只股票只会出现一次
+    final_results = {}
+
+    print(f"开始并发扫描（最大线程 10）...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(process_stock, s, total_count): s for s in all_tickers}
+        futures = {executor.submit(process_stock, s, total): s for s in tickers}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
-            if res: results.append(res)
+            if res:
+                # 存入字典自动去重
+                final_results[res['symbol']] = res
 
-    results.sort(key=lambda x: x['symbol'])
+    # 排序
+    sorted_keys = sorted(final_results.keys())
 
-    # 生成 HTML
-    html_content = f"""
-    <!DOCTYPE html><html><head><meta charset="utf-8"><title>{index_arg} 缠论三买报告</title>
+    # --- 最终网页组装 ---
+    # 头部加载一次 Plotly JS，避免每个图表重复请求和内存溢出
+    html_start = f"""
+    <!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>{index_arg} 缠论选股报告</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>body{{font-family:sans-serif;background:#f0f2f5;padding:20px;}}
-    .card{{background:white;border-radius:12px;margin-bottom:30px;box-shadow:0 4px 10px rgba(0,0,0,0.05);overflow:hidden;}}
-    .header{{background:#2c3e50;color:white;padding:15px 25px;font-weight:bold;}}
-    .reason{{padding:15px 25px;background:#fff9eb;color:#5d4037;line-height:1.6;border-bottom:1px solid #eee;}}
-    .stats{{text-align:center;color:#666;margin-bottom:30px;}}</style></head>
-    <body><h1 style="text-align:center;">🚀 {index_arg} 30min 缠论三买扫描</h1>
-    <div class="stats">指数: {index_arg} | 样本总量: {total_count} 只 | 发现信号: {len(results)} 只 | 时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
+    <style>
+        body{{font-family:'PingFang SC',sans-serif;background:#f0f2f5;padding:20px;margin:0;}}
+        .container{{max-width:1100px;margin:0 auto;}}
+        .card{{background:white;border-radius:12px;margin-bottom:40px;box-shadow:0 4px 15px rgba(0,0,0,0.08);overflow:hidden;}}
+        .card-title{{background:#2c3e50;color:white;padding:15px 25px;font-size:1.3em;font-weight:bold;}}
+        .card-reason{{padding:15px 25px;background:#fff9eb;border-bottom:1px solid #eee;color:#5d4037;line-height:1.6;}}
+        .stats{{text-align:center;padding:30px;color:#666;}}
+    </style></head><body><div class="container">
+    <h1 style="text-align:center;">📈 {index_arg} 缠论三买深度报告</h1>
+    <div class="stats">扫描范围: {index_arg} | 样本总量: {total} | 发现买点: {len(final_results)}<br>
+    更新时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
     """
 
     with open("index.html", "w", encoding="utf-8") as f:
-        f.write(html_content)
-        if not results:
-            f.write("<div class='card' style='padding:50px;text-align:center;'><h2>今日未发现符合条件的个股</h2></div>")
+        f.write(html_start)
+        if not final_results:
+            f.write("<div class='card' style='padding:50px;text-align:center;'><h2>今日暂无符合三买形态的标的</h2></div>")
         else:
-            for item in results:
-                f.write(f"<div class='card'><div class='header'>{item['symbol']}</div><div class='reason'>{item['report']}</div><div style='padding:10px;'>{item['html']}</div></div>")
-        f.write("</body></html>")
-    print(f"扫描完毕，发现 {len(results)} 个信号。")
+            for symbol in sorted_keys:
+                item = final_results[symbol]
+                f.write(f"""
+                <div class="card">
+                    <div class="card-title">{symbol}</div>
+                    <div class="card-reason">{item['report']}</div>
+                    <div style="padding:10px;">{item['html']}</div>
+                </div>
+                """)
+        f.write("</div></body></html>")
+    
+    print(f"扫描完毕，共发现 {len(final_results)} 个信号。")
 
 if __name__ == "__main__":
     main()
