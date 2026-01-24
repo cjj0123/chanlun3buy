@@ -10,7 +10,7 @@ on:
         type: choice
         options:
           - HSI
-          - NDX      # <--- 新增纳斯达克100选项
+          - NDX
           - SP500
           - HS300
           - ZZ500
