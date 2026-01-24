@@ -79,26 +79,42 @@ class ChanStrategy:
         return fig.to_html(full_html=False, include_plotlyjs='cdn')
 
 def get_tickers(index_name):
-    """获取不同指数的成分股"""
+    """获取不同指数的成分股 (适配最新版 akshare)"""
     print(f"正在获取 {index_name} 成分股列表...")
     tickers = []
     try:
         if index_name == "SP500":
-            # 获取标普500 (从Wikipedia抓取)
-            table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+            # 标普500：使用更稳定的数据源或增加 User-Agent
+            url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+            import requests
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers)
+            table = pd.read_html(response.text)
             tickers = table[0]['Symbol'].tolist()
+            # yfinance 里的标普500点号需处理，如 BRK.B -> BRK-B
+            tickers = [t.replace('.', '-') for t in tickers]
+
         elif index_name == "HS300":
-            df = ak.stock_zh_index_stock_cons(symbol="000300")
-            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['code'].tolist()]
+            # 沪深300 最新接口
+            df = ak.index_stock_cons(symbol="000300")
+            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+            
         elif index_name == "ZZ500":
-            df = ak.stock_zh_index_stock_cons(symbol="000905")
-            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['code'].tolist()]
+            # 中证500 最新接口
+            df = ak.index_stock_cons(symbol="000905")
+            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+            
         elif index_name == "HSI":
-            # 恒生指数主要成分股
-            hsi_list = ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "1299.HK", "0005.HK", "0939.HK", "1398.HK", "2318.HK", "3988.HK"]
-            tickers = hsi_list
+            # 恒生指数主要成分股（维持硬编码或使用接口）
+            df = ak.stock_hk_index_spot_em()
+            # 筛选恒生指数成分股（简单演示，取市值前30）
+            tickers = [f"{code[1:]}.HK" for code in df['代码'].head(30).tolist()]
+            
     except Exception as e:
-        print(f"获取列表失败: {e}")
+        print(f"获取 {index_name} 列表失败，原因: {e}")
+        # 兜底方案
+        if index_name == "HSI": tickers = ["0700.HK", "9988.HK", "3690.HK"]
+        
     return tickers
 
 def process_stock(symbol):
