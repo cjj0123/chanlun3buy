@@ -8,8 +8,9 @@ import datetime
 import sys
 import akshare as ak
 import threading
+import requests
 
-# 用于多线程计数的锁
+# 进度计数锁
 lock = threading.Lock()
 counter = 0
 
@@ -70,6 +71,9 @@ class ChanStrategy:
                 if (n['type'] == 'top' and n['val'] > bi[-1]['val']) or (n['type'] == 'bottom' and n['val'] < bi[-1]['val']): bi[-1] = n
         self.bi = bi
 
+    def get_macd_power(self, start_time, end_time):
+        return self.df.loc[start_time:end_time, 'macd_area'].sum()
+
     def analyze_three_buy(self):
         if len(self.bi) < 5: return
         try:
@@ -80,15 +84,18 @@ class ChanStrategy:
             self.zhongshu = {'zg': zg, 'zd': zd, 'start': m1['time'], 'end': m3['time']}
             b_leave, b_back = self.bi[-2], self.bi[-1]
             if b_back['val'] <= zg: return
-            p_leave = self.df.loc[self.bi[-3]['time']:self.bi[-2]['time'], 'macd_area'].sum()
-            p_back = self.df.loc[self.bi[-2]['time']:self.bi[-1]['time'], 'macd_area'].sum()
+            
+            # 修正：使用 self.bi
+            p_leave = self.get_macd_power(self.bi[-3]['time'], self.bi[-2]['time'])
+            p_back = self.get_macd_power(self.bi[-2]['time'], self.bi[-1]['time'])
             power_ratio = p_back / p_leave if p_leave > 0 else 1
             if power_ratio > 0.85: return 
             if self.df.iloc[-1]['Close'] < b_back['val']: return
+            
             self.buy_point = b_back
             self.analysis_report = (
-                f"<b>[形态确认]</b> 30min上涨中枢区间 [{zd:.2f} - {zg:.2f}]。<br>"
-                f"<b>[强度判定]</b> 回踩低点 {b_back['val']:.2f} 守住上沿。回踩力度仅为突破段的 {power_ratio:.1%}，属于缩量回调。"
+                f"<b>[形态确认]</b> 30min中枢 [{zd:.2f} - {zg:.2f}]。<br>"
+                f"<b>[强度判定]</b> 回踩低点 {b_back['val']:.2f} 站稳上沿。MACD回撤能量比: {power_ratio:.1%}。"
             )
         except: pass
 
@@ -114,42 +121,63 @@ class ChanStrategy:
         return fig.to_html(full_html=False, include_plotlyjs=False, div_id=f"chart_{safe_id}")
 
 def get_tickers(index_name):
-    """极其稳健的代码列表获取"""
-    print(f"--- 正在调用 API 获取 {index_name} 成分股 ---")
+    """适配全市场指数的稳健获取逻辑"""
+    print(f"--- 正在获取 {index_name} 全量成分股列表 ---")
     tickers = []
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
     try:
-        if index_name == "HSI":
-            # 尝试多个接口获取恒生指数
-            try:
-                df = ak.stock_hk_index_spot_em()
-                # 筛选名称包含“恒生指数”的
-                hsi_code = df[df['名称'] == '恒生指数']['代码'].iloc[0]
-                cons = ak.stock_hk_index_stock_cons_em(symbol="恒生指数")
-                tickers = [f"{c[1:] if len(c)==5 else c}.HK" for c in cons['代码'].tolist()]
-            except:
-                # 强制备选名单 (82只主要成份股)
-                tickers = ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "1299.HK", "0005.HK", "0939.HK", "1398.HK", "2318.HK", "3988.HK", "1810.HK", "0388.HK"]
+        if index_name == "SP500":
+            url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+            table = pd.read_html(requests.get(url, headers=headers, timeout=15).text)
+            tickers = [t.replace('.', '-') for t in table[0]['Symbol'].tolist()]
+            
+        elif index_name == "NDX":
+            url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
+            table = pd.read_html(requests.get(url, headers=headers, timeout=15).text)
+            # 尝试寻找包含 Ticker 的列
+            for df in table:
+                if 'Ticker' in df.columns:
+                    tickers = df['Ticker'].tolist()
+                    break
+            tickers = [t.replace('.', '-') for t in tickers]
+
+        elif index_name == "HSI":
+            # 恒生指数 82 只完整硬编码名单
+            tickers = [
+                "00001", "00002", "00003", "00005", "00006", "00011", "00012", "00016", "00017", "00027",
+                "00066", "00101", "00151", "00175", "00241", "00267", "00285", "00288", "00291", "00316",
+                "00322", "00358", "00386", "00388", "00669", "00688", "00700", "00713", "00762", "00823",
+                "00857", "00881", "00883", "00939", "00941", "00960", "00968", "00981", "00992", "00998",
+                "01024", "01038", "01044", "01088", "01093", "01109", "01113", "01177", "01209", "01211",
+                "01299", "01308", "01313", "01347", "01378", "01398", "01810", "01876", "01928", "01929",
+                "02015", "02020", "02269", "02313", "02318", "02319", "02331", "02333", "02359", "02380",
+                "02382", "02628", "02688", "03690", "03968", "03988", "06098", "06618", "06690", "09618",
+                "09888", "09961", "09988", "09999"
+            ]
+            tickers = [f"{c[1:] if len(c)==5 else c}.HK" for c in tickers]
+
         elif index_name == "HS300":
             df = ak.index_stock_cons(symbol="000300")
             tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
-        elif index_name == "NDX":
-            tickers = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOG", "META", "AMD", "NFLX", "AVGO", "COST", "ADBE", "QCOM", "TXN", "INTC"]
-        else:
-            tickers = ["0700.HK"]
+            
+        elif index_name == "ZZ500":
+            df = ak.index_stock_cons(symbol="000905")
+            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+
+        tickers = sorted(list(set(tickers)))
+        if not tickers: raise ValueError("获取列表为空")
+        print(f"--- 列表获取成功: {index_name} 共计 {len(tickers)} 只 ---")
+        return tickers
+
     except Exception as e:
-        print(f"获取列表异常: {e}")
-        tickers = ["0700.HK", "9988.HK"]
-    
-    clean_list = sorted(list(set(tickers)))
-    print(f"--- 列表准备完毕: 共计 {len(clean_list)} 只个股 ---")
-    return clean_list
+        print(f"获取 {index_name} 失败: {e}，启用最低兜底")
+        return ["AAPL", "NVDA", "0700.HK", "600519.SS"]
 
 def process_stock(symbol, total):
     global counter
     try:
-        # 下载数据
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="59d", interval="30m")
+        data = yf.download(symbol, period="59d", interval="30m", progress=False, timeout=15)
         
         with lock:
             counter += 1
@@ -157,7 +185,7 @@ def process_stock(symbol, total):
                 print(f"进度: [{counter}/{total}] 正在处理 {symbol}...")
 
         if data.empty or len(data) < 40: return None
-        data.columns = [c.capitalize() for c in data.columns]
+        if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
         data.index = data.index.tz_localize(None)
         
         cs = ChanStrategy(symbol, data)
@@ -173,10 +201,8 @@ def main():
     total_count = len(all_tickers)
     
     results = []
-    print(f"开始执行多线程并发扫描...")
-    
-    # 调低并发数，防止被 Yahoo 封 IP 导致数据为空
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    # 增加线程数以应对 SP500 的大量数据
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_stock, s, total_count): s for s in all_tickers}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
@@ -184,41 +210,28 @@ def main():
 
     results.sort(key=lambda x: x['symbol'])
 
-    # 网页生成
+    # 生成 HTML
     html_content = f"""
-    <!DOCTYPE html><html><head><meta charset="utf-8">
-    <title>{index_arg} 缠论选股报告</title>
+    <!DOCTYPE html><html><head><meta charset="utf-8"><title>{index_arg} 缠论三买报告</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        body {{ font-family: sans-serif; background: #f0f2f5; padding: 20px; }}
-        .card {{ background: white; border-radius: 12px; margin-bottom: 30px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); overflow: hidden; }}
-        .card-header {{ background: #2c3e50; color: white; padding: 15px 25px; font-weight: bold; font-size: 1.2em; }}
-        .reason {{ padding: 15px 25px; background: #fff9eb; color: #5d4037; line-height: 1.6; border-bottom: 1px solid #eee; }}
-        .stats {{ text-align: center; color: #666; margin-bottom: 30px; }}
-    </style></head>
-    <body>
-        <h1 style="text-align:center;">🚀 {index_arg} 30min 缠论三买扫描</h1>
-        <div class="stats">
-            本次扫描范围: {index_arg} | 样本总量: {total_count} 只 | 发现信号: {len(results)} 只 | 扫描时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
-        </div>
+    <style>body{{font-family:sans-serif;background:#f0f2f5;padding:20px;}}
+    .card{{background:white;border-radius:12px;margin-bottom:30px;box-shadow:0 4px 10px rgba(0,0,0,0.05);overflow:hidden;}}
+    .header{{background:#2c3e50;color:white;padding:15px 25px;font-weight:bold;}}
+    .reason{{padding:15px 25px;background:#fff9eb;color:#5d4037;line-height:1.6;border-bottom:1px solid #eee;}}
+    .stats{{text-align:center;color:#666;margin-bottom:30px;}}</style></head>
+    <body><h1 style="text-align:center;">🚀 {index_arg} 30min 缠论三买扫描</h1>
+    <div class="stats">指数: {index_arg} | 样本总量: {total_count} 只 | 发现信号: {len(results)} 只 | 时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
     """
 
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
         if not results:
-            f.write("<div class='card' style='padding:40px; text-align:center;'><h2>今日该指数下未发现符合三买条件的个股</h2></div>")
+            f.write("<div class='card' style='padding:50px;text-align:center;'><h2>今日未发现符合条件的个股</h2></div>")
         else:
             for item in results:
-                f.write(f"""
-                <div class="card">
-                    <div class="card-header">{item['symbol']}</div>
-                    <div class="reason">{item['report']}</div>
-                    <div style="padding:10px;">{item['html']}</div>
-                </div>
-                """)
+                f.write(f"<div class='card'><div class='header'>{item['symbol']}</div><div class='reason'>{item['report']}</div><div style='padding:10px;'>{item['html']}</div></div>")
         f.write("</body></html>")
-    
-    print(f"扫描完毕。成功生成报告，共发现 {len(results)} 个信号。")
+    print(f"扫描完毕，发现 {len(results)} 个信号。")
 
 if __name__ == "__main__":
     main()
