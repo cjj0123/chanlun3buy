@@ -8,9 +8,6 @@ import datetime
 import sys
 import akshare as ak
 
-import pandas as pd
-import numpy as np
-
 class ChanStrategy:
     def __init__(self, symbol, df):
         self.symbol = symbol
