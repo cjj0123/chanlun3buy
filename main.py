@@ -140,19 +140,27 @@ class ChanStrategy:
 
 # --- 选股逻辑与指数获取保持之前的 get_tickers 和 process_stock 不变 ---
 def get_tickers(index_name):
-    print(f"获取 {index_name} 列表...")
+    print(f"正在获取 {index_name} 成分股列表...")
+    tickers = []
     try:
         if index_name == "HS300":
             df = ak.index_stock_cons(symbol="000300")
-            return [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
         elif index_name == "ZZ500":
             df = ak.index_stock_cons(symbol="000905")
-            return [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+            tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
         elif index_name == "HSI":
-            return ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "9888.HK", "9618.HK", "2015.HK", "0981.HK", "1024.HK", "0992.HK"]
+            # 增加一些恒生科技和恒指核心
+            tickers = ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "9888.HK", "9618.HK", "2015.HK", "2382.HK", "0981.HK", "1024.HK", "0992.HK", "2269.HK"]
         elif index_name == "SP500":
-            return ["AAPL", "TSLA", "NVDA", "MSFT", "AMD", "GOOG", "AMZN", "META"]
-    except: return ["0700.HK"]
+            # 示例美股
+            tickers = ["AAPL", "TSLA", "NVDA", "MSFT", "AMD", "GOOG", "AMZN", "META", "NFLX", "AVGO"]
+            
+        # 再次确保返回前去重
+        return list(set(tickers))
+    except Exception as e:
+        print(f"获取列表失败: {e}")
+        return []
 
 def process_stock(symbol):
     try:
@@ -164,21 +172,53 @@ def process_stock(symbol):
     except: return None
 
 def main():
+    # 1. 获取运行参数
     index_arg = sys.argv[1] if len(sys.argv) > 1 else "HSI"
-    tickers = get_tickers(index_arg)
-    charts = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(process_stock, s) for s in tickers]
-        for f in concurrent.futures.as_completed(futures):
-            res = f.result(); 
-            if res: charts.append(res)
+    
+    # 2. 获取原始列表
+    raw_tickers = get_tickers(index_arg)
+    
+    # 3. 【核心修正】去重并排序，确保每只股票只处理一次
+    tickers = sorted(list(set(raw_tickers))) 
+    
+    print(f"开始扫描 {index_arg}，去重后共 {len(tickers)} 只股票...")
+    
+    # 使用字典存储结果，防止多线程写入时的潜在重复
+    results_dict = {} 
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        # 将 symbol 作为 key 传给 future，方便后续追踪
+        future_to_symbol = {executor.submit(process_stock, s): s for s in tickers}
+        
+        for future in concurrent.futures.as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            try:
+                chart_html = future.result()
+                if chart_html:
+                    results_dict[symbol] = chart_html # 存入字典，key 是唯一的
+                    print(f"发现信号 -> {symbol}")
+            except Exception as e:
+                print(f"处理 {symbol} 时出错: {e}")
+
+    # 4. 按照股票代码顺序生成 HTML
+    sorted_symbols = sorted(results_dict.keys())
+    
+    html_header = f"""
+    <html><head><meta charset='utf-8'><title>{index_arg} 强化版三买报告</title>
+    <style>body {{ font-family: sans-serif; background: #f0f2f5; padding: 20px; }}
+    .card {{ background: white; border-radius: 10px; padding: 20px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
+    h1 {{ text-align: center; color: #1a1a1a; }}</style></head>
+    <body><h1>🚀 {index_arg} 30min强化三买扫描</h1>
+    """
+    
     with open("index.html", "w", encoding="utf-8") as f:
-        f.write(f"<html><head><meta charset='utf-8'></head><body><h1>{index_arg} 强化版三买报告</h1>")
-        if not charts: f.write("<h2>今日无强力三买信号</h2>")
+        f.write(html_header)
+        if not sorted_symbols:
+            f.write("<div class='card'><h2 style='text-align:center; color:gray;'>今日无强力三买信号</h2></div>")
         else:
-            for c in charts: f.write(f"<div>{c}</div><hr>")
-        f.write("</body></html>")
+            for symbol in sorted_symbols:
+                f.write(f"<div class='card'>{results_dict[symbol]}</div>")
+        f.write(f"<p style='text-align:center;'>最后更新: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p></body></html>")
 
 if __name__ == "__main__":
     main()
