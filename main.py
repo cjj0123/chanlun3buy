@@ -139,57 +139,71 @@ class ChanStrategy:
         return fig.to_html(full_html=False, include_plotlyjs='cdn')
 
 def get_tickers(index_name):
-    """动态获取全量成分股列表 (增加纳斯达克100)"""
+    """获取成分股列表 (适配最新版 akshare 接口)"""
     print(f"正在获取 {index_name} 全量成分股列表...")
     tickers = []
     try:
-        if index_name == "NDX100":
-            # 获取纳斯达克 100 (Nasdaq-100)
+        if index_name == "HSI":
+            # 最新的港股指数成分股接口
+            # 注意：symbol 需要传入 "恒生指数"
+            df = ak.index_stock_cons_hk(symbol="恒生指数")
+            # 格式转换: '00700' -> '0700.HK'
+            # 逻辑：港股代码通常为5位，yfinance通常接受去掉前导0后的4位+HK，或者直接5位+HK
+            raw_codes = df['代码'].tolist()
+            tickers = [f"{c[1:] if len(c)==5 and c.startswith('0') else c}.HK" for c in raw_codes]
+
+        elif index_name == "NDX":
+            # 纳斯达克 100
             url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
-            import requests
             headers = {'User-Agent': 'Mozilla/5.0'}
+            import requests
             response = requests.get(url, headers=headers)
-            # 纳斯达克100的表格通常是索引为4的表格
             tables = pd.read_html(response.text)
-            # 寻找包含 'Ticker' 或 'Symbol' 的表格
-            df = None
-            for t in tables:
-                if 'Ticker' in t.columns or 'Symbol' in t.columns:
-                    df = t
+            for table in tables:
+                col = next((c for c in table.columns if c in ['Ticker', 'Symbol']), None)
+                if col:
+                    tickers = table[col].tolist()
                     break
-            col = 'Ticker' if 'Ticker' in df.columns else 'Symbol'
-            tickers = [t.replace('.', '-') for t in df[col].tolist()]
+            tickers = [t.replace('.', '-') for t in tickers]
 
         elif index_name == "SP500":
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-            import requests
             headers = {'User-Agent': 'Mozilla/5.0'}
+            import requests
             response = requests.get(url, headers=headers)
-            table = pd.read_html(response.text)
-            tickers = [t.replace('.', '-') for t in table[0]['Symbol'].tolist()]
+            table = pd.read_html(response.text)[0]
+            tickers = [t.replace('.', '-') for t in table['Symbol'].tolist()]
 
-        elif index_name == "HSI":
-            df = ak.stock_hk_index_stock_cons(symbol="恒生指数")
-            tickers = [f"{code[1:] if len(code)==5 and code.startswith('0') else code}.HK" for code in df['代码'].tolist()]
-            
         elif index_name == "HS300":
+            # 沪深300
             df = ak.index_stock_cons(symbol="000300")
             tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
             
         elif index_name == "ZZ500":
+            # 中证500
             df = ak.index_stock_cons(symbol="000905")
             tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
 
-        # 统一去重和排序
+        # 通死去重
         tickers = sorted(list(set(tickers)))
-        print(f"成功获取 {index_name} 列表，共计 {len(tickers)} 只个股。")
+        
+        # 如果获取结果为空，触发异常进入兜底
+        if not tickers:
+            raise ValueError(f"{index_name} 获取结果为空")
+            
+        print(f"成功获取 {index_name} 列表，共计 {len(tickers)} 只。")
         return tickers
 
     except Exception as e:
         print(f"获取 {index_name} 列表失败: {e}")
-        # 兜底
-        if index_name == "NDX100": return ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META"]
-        return ["0700.HK"]
+        # 兜底方案：至少保证有重点权重股可以扫描
+        fallback = {
+            "HSI": ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "1299.HK", "0005.HK"],
+            "NDX": ["AAPL", "MSFT", "NVDA", "TSLA", "GOOG", "AMZN"],
+            "HS300": ["600519.SS", "601318.SS", "000858.SZ"],
+            "SP500": ["AAPL", "MSFT", "NVDA"]
+        }
+        return fallback.get(index_name, ["0700.HK"])
         
 def process_stock(symbol):
     try:
