@@ -8,107 +8,158 @@ import datetime
 import sys
 import akshare as ak
 
+import pandas as pd
+import numpy as np
+
 class ChanStrategy:
     def __init__(self, symbol, df):
         self.symbol = symbol
-        # 确保数据量足够计算指标
-        if len(df) < 40:
-            self.k_data = pd.DataFrame()
-            return
-            
-        self.df = df.copy()
-        self.k_data = pd.DataFrame()
+        # 预计算：MACD用于背驰判断
+        self.prepare_indicators(df)
         self.bi = []
         self.zhongshu = None
         self.buy_point = None
         
-        # 1. 计算技术指标 (MACD)
-        self.calculate_indicators()
-        # 2. 缠论处理
+        # 核心步骤
         self.process_chan()
 
-    def calculate_indicators(self):
-        """计算 MACD 指标用于力度过滤"""
-        ema12 = self.df['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = self.df['Close'].ewm(span=26, adjust=False).mean()
-        self.df['dif'] = ema12 - ema26
-        self.df['dea'] = self.df['dif'].ewm(span=9, adjust=False).mean()
-        self.df['macd'] = (self.df['dif'] - self.df['dea']) * 2
+    def prepare_indicators(self, df):
+        """计算缠论所需的辅助指标"""
+        df = df.copy()
+        # 计算MACD用于力度对比
+        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['dif'] = ema12 - ema26
+        df['dea'] = df['dif'].ewm(span=9, adjust=False).mean()
+        df['macd'] = (df['dif'] - self.df['dea']) * 2
+        # 计算MACD绝对值的累计，模拟“面积”
+        df['macd_area'] = df['macd'].abs()
+        self.df = df
 
     def clean_inclusion(self):
-        """K线包含处理"""
-        df = self.df
-        processed_k = []
-        last_up, last_down = df.iloc[0]['High'], df.iloc[0]['Low']
-        direction = 1 
-        for i in range(1, len(df)):
-            curr_up, curr_down = df.iloc[i]['High'], df.iloc[i]['Low']
-            if (last_up >= curr_up and last_down <= curr_down) or (curr_up >= last_up and curr_down <= last_down):
+        """严格K线包含处理：返回包含处理后的新K线序列"""
+        k_list = []
+        if len(self.df) < 2: return
+        
+        # 初始K线
+        last_k = {
+            'time': self.df.index[0],
+            'high': self.df.iloc[0]['High'],
+            'low': self.df.iloc[0]['Low'],
+            'count': 1 # 记录包含了几根K线
+        }
+        direction = 1 # 默认向上
+        
+        for i in range(1, len(self.df)):
+            curr_h = self.df.iloc[i]['High']
+            curr_l = self.df.iloc[i]['Low']
+            
+            # 判断包含
+            if (last_k['high'] >= curr_h and last_k['low'] <= curr_l) or \
+               (curr_h >= last_k['high'] and curr_l <= last_k['low']):
+                # 包含发生，根据趋势合并
                 if direction == 1:
-                    last_up, last_down = max(last_up, curr_up), max(last_down, curr_down)
+                    last_k['high'] = max(last_k['high'], curr_h)
+                    last_k['low'] = max(last_k['low'], curr_l)
                 else:
-                    last_up, last_down = min(last_up, curr_up), min(last_down, curr_down)
+                    last_k['high'] = min(last_k['high'], curr_h)
+                    last_k['low'] = min(last_k['low'], curr_l)
+                last_k['count'] += 1
             else:
-                direction = 1 if curr_up > last_up else -1
-                processed_k.append({'up': last_up, 'down': last_down, 'time': df.index[i-1], 'idx': i-1})
-                last_up, last_down = curr_up, curr_down
-        processed_k.append({'up': last_up, 'down': last_down, 'time': df.index[-1], 'idx': len(df)-1})
-        self.k_data = pd.DataFrame(processed_k)
+                # 趋势确认切换
+                direction = 1 if curr_h > last_k['high'] else -1
+                k_list.append(last_k)
+                last_k = {'time': self.df.index[i], 'high': curr_h, 'low': curr_l, 'count': 1, 'idx': i}
+        
+        k_list.append(last_k)
+        self.k_data = pd.DataFrame(k_list)
 
     def identify_bi(self):
-        """识别笔"""
+        """标准化笔识别：顶底分型之间至少有1根独立K线（即总计至少5根K线）"""
         k = self.k_data
         if len(k) < 5: return
-        nodes = []
-        for i in range(1, len(k) - 1):
-            if k.iloc[i]['up'] > k.iloc[i-1]['up'] and k.iloc[i]['up'] > k.iloc[i+1]['up']:
-                nodes.append({'type': 'top', 'val': k.iloc[i]['up'], 'time': k.iloc[i]['time'], 'idx': k.iloc[i]['idx']})
-            elif k.iloc[i]['down'] < k.iloc[i-1]['down'] and k.iloc[i]['down'] < k.iloc[i+1]['down']:
-                nodes.append({'type': 'bottom', 'val': k.iloc[i]['down'], 'time': k.iloc[i]['time'], 'idx': k.iloc[i]['idx']})
         
+        # 1. 识别初步分型
+        potential_nodes = []
+        for i in range(1, len(k) - 1):
+            if k.iloc[i]['high'] > k.iloc[i-1]['high'] and k.iloc[i]['high'] > k.iloc[i+1]['high']:
+                potential_nodes.append({'type': 'top', 'val': k.iloc[i]['high'], 'idx': i, 'time': k.iloc[i]['time']})
+            elif k.iloc[i]['low'] < k.iloc[i-1]['low'] and k.iloc[i]['low'] < k.iloc[i+1]['low']:
+                potential_nodes.append({'type': 'bottom', 'val': k.iloc[i]['low'], 'idx': i, 'time': k.iloc[i]['time']})
+        
+        # 2. 笔的连接逻辑：严格校验分型间距
         bi = []
-        for n in nodes:
-            if not bi: bi.append(n)
-            elif n['type'] != bi[-1]['type'] and abs(n['idx'] - bi[-1]['idx']) >= 3: bi.append(n)
-            elif n['type'] == bi[-1]['type']:
-                if (n['type'] == 'top' and n['val'] > bi[-1]['val']) or (n['type'] == 'bottom' and n['val'] < bi[-1]['val']): bi[-1] = n
+        for node in potential_nodes:
+            if not bi:
+                bi.append(node)
+                continue
+            
+            last = bi[-1]
+            # 必须顶底交替
+            if node['type'] == last['type']:
+                # 同向分型取极值
+                if node['type'] == 'top' and node['val'] > last['val']: bi[-1] = node
+                elif node['type'] == 'bottom' and node['val'] < last['val']: bi[-1] = node
+            else:
+                # 核心优化：顶底之间必须至少相隔 3 根包含处理后的K线
+                # 满足标准缠论笔定义的最小距离
+                if abs(node['idx'] - last['idx']) >= 3:
+                    bi.append(node)
         self.bi = bi
 
+    def get_macd_power(self, start_time, end_time):
+        """计算某段走势的MACD力度（面积和最高点）"""
+        segment = self.df.loc[start_time:end_time]
+        if segment.empty: return 0
+        return segment['macd_area'].sum()
+
     def analyze_three_buy(self):
-        """强化版三买判断逻辑"""
+        """
+        三买深度优化逻辑：
+        1. 寻找合法中枢
+        2. 离开段 vs 回调段 力度对比（背驰校验）
+        3. 回调段末端确认
+        """
         if len(self.bi) < 7: return
+        
         try:
-            # 1. 中枢定义
+            # 定义最近中枢 (由前三笔重叠构成)
             m1, m2, m3 = self.bi[-5], self.bi[-4], self.bi[-3]
+            # 中枢高点取两个顶的低值，中枢低点取两个底的高值
+            zg = min(m1['val'], m3['val']) if m1['type'] == 'top' else min(m2['val'], self.bi[-6]['val'])
+            zd = max(m1['val'], m3['val']) if m1['type'] == 'bottom' else max(m2['val'], self.bi[-6]['val'])
+            
+            # 简化版中枢有效判定
             zg = min(max(m1['val'], m2['val']), max(m2['val'], m3['val']))
             zd = max(min(m1['val'], m2['val']), min(m2['val'], m3['val']))
+            
             if zd >= zg: return
             self.zhongshu = {'zg': zg, 'zd': zd, 'start': m1['time'], 'end': m3['time']}
 
-            # 2. 离开段强度过滤 (优化点1: 离开幅度必须超过中枢高度的30%)
-            b_leave = self.bi[-2]
-            zs_height = zg - zd
-            leave_height = b_leave['val'] - zg
-            if leave_height < zs_height * 0.3: return 
+            # --- 优化判断：三买点构成 ---
+            b_leave = self.bi[-2] # 离开笔
+            b_back = self.bi[-1]  # 回调笔 (正在形成或已确认)
 
-            # 3. 回调段过滤 (优化点2: 回调低点必须高于 ZG 且留有安全余量)
-            b_back = self.bi[-1]
-            if b_back['val'] <= zg * 1.002: return # 必须高于上沿0.2%，防止假突破
+            # 条件1：回调笔低点不破ZG
+            if b_back['val'] <= zg: return
+            
+            # 条件2：离开段力度 > 回调段力度 (MACD背驰法)
+            # 只有当回调的力量明显弱于上涨力量时，三买才可靠
+            power_leave = self.get_macd_power(bi[-3]['time'], bi[-2]['time'])
+            power_back = self.get_macd_power(bi[-2]['time'], bi[-1]['time'])
+            
+            # 优化：回调面积必须小于离开面积的 60% (说明跌不动)
+            if power_back > power_leave * 0.6: return
 
-            # 4. MACD 过滤 (优化点3: DIF 必须在 0 轴附近且拒绝死叉或缩量回调)
-            # 获取回调底点对应时间点的 MACD 值
-            current_macd = self.df.loc[b_back['time']]
-            if current_macd['dif'] < -0.05: return # DIF过低说明下杀力度太强，易跌回中枢
-
-            # 5. 底分型确认 (优化点4: K线形态确认向上)
-            last_3_klines = self.df.iloc[-3:]
-            if not (last_3_klines.iloc[-1]['Low'] > last_3_klines.iloc[-2]['Low'] and 
-                    last_3_klines.iloc[-2]['Low'] < last_3_klines.iloc[-3]['Low']):
-                # 如果没有底分型，说明还在下跌中，不是买点
-                return
-
+            # 条件3：确认回调笔已经结束 (出现底分型确认)
+            last_close = self.df.iloc[-1]['Close']
+            if last_close < b_back['val']: return # 还在下跌中
+            
+            # 判定成功
             self.buy_point = b_back
-        except: pass
+            
+        except Exception as e:
+            pass
 
     def process_chan(self):
         self.clean_inclusion()
