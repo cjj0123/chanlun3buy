@@ -14,7 +14,8 @@ on:
           - HS300
           - ZZ500
   schedule:
-    - cron: '0 10 * * 1-5' # 每天定时运行默认项
+    # 每天北京时间 16:30 自动扫描一次恒生指数 (UTC 08:30)
+    - cron: '30 8 * * 1-5'
 
 permissions:
   contents: write
@@ -34,10 +35,13 @@ jobs:
         python-version: '3.10'
 
     - name: Install dependencies
-      run: pip install pandas numpy yfinance plotly akshare lxml
+      run: |
+        python -m pip install --upgrade pip
+        # 确保安装了所有需要的库
+        pip install pandas numpy yfinance plotly akshare lxml
 
     - name: Run Strategy
-      # 传入选择的指数参数
+      # 获取输入参数，如果没有输入（定时触发）则默认 HSI
       run: python main.py ${{ github.event.inputs.index_type || 'HSI' }}
 
     - name: Deploy to GitHub Pages
