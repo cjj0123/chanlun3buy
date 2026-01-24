@@ -10,9 +10,11 @@ on:
         type: choice
         options:
           - HSI
+          - NDX      # <--- 新增纳斯达克100选项
           - SP500
           - HS300
           - ZZ500
+          
   schedule:
     # 每天北京时间 16:30 自动扫描一次恒生指数 (UTC 08:30)
     - cron: '30 8 * * 1-5'
