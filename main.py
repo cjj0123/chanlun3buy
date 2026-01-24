@@ -138,30 +138,59 @@ class ChanStrategy:
         fig.update_layout(title=f"{self.symbol} 强化版三买分析 (MACD+力度过滤)", xaxis_rangeslider_visible=False, height=800)
         return fig.to_html(full_html=False, include_plotlyjs='cdn')
 
-# --- 选股逻辑与指数获取保持之前的 get_tickers 和 process_stock 不变 ---
 def get_tickers(index_name):
-    print(f"正在获取 {index_name} 成分股列表...")
+    """动态获取全量成分股列表 (增加纳斯达克100)"""
+    print(f"正在获取 {index_name} 全量成分股列表...")
     tickers = []
     try:
-        if index_name == "HS300":
+        if index_name == "NDX100":
+            # 获取纳斯达克 100 (Nasdaq-100)
+            url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
+            import requests
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers)
+            # 纳斯达克100的表格通常是索引为4的表格
+            tables = pd.read_html(response.text)
+            # 寻找包含 'Ticker' 或 'Symbol' 的表格
+            df = None
+            for t in tables:
+                if 'Ticker' in t.columns or 'Symbol' in t.columns:
+                    df = t
+                    break
+            col = 'Ticker' if 'Ticker' in df.columns else 'Symbol'
+            tickers = [t.replace('.', '-') for t in df[col].tolist()]
+
+        elif index_name == "SP500":
+            url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+            import requests
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers)
+            table = pd.read_html(response.text)
+            tickers = [t.replace('.', '-') for t in table[0]['Symbol'].tolist()]
+
+        elif index_name == "HSI":
+            df = ak.stock_hk_index_stock_cons(symbol="恒生指数")
+            tickers = [f"{code[1:] if len(code)==5 and code.startswith('0') else code}.HK" for code in df['代码'].tolist()]
+            
+        elif index_name == "HS300":
             df = ak.index_stock_cons(symbol="000300")
             tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
+            
         elif index_name == "ZZ500":
             df = ak.index_stock_cons(symbol="000905")
             tickers = [f"{c}.SS" if c.startswith('6') else f"{c}.SZ" for c in df['品种代码'].tolist()]
-        elif index_name == "HSI":
-            # 增加一些恒生科技和恒指核心
-            tickers = ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "9888.HK", "9618.HK", "2015.HK", "2382.HK", "0981.HK", "1024.HK", "0992.HK", "2269.HK"]
-        elif index_name == "SP500":
-            # 示例美股
-            tickers = ["AAPL", "TSLA", "NVDA", "MSFT", "AMD", "GOOG", "AMZN", "META", "NFLX", "AVGO"]
-            
-        # 再次确保返回前去重
-        return list(set(tickers))
-    except Exception as e:
-        print(f"获取列表失败: {e}")
-        return []
 
+        # 统一去重和排序
+        tickers = sorted(list(set(tickers)))
+        print(f"成功获取 {index_name} 列表，共计 {len(tickers)} 只个股。")
+        return tickers
+
+    except Exception as e:
+        print(f"获取 {index_name} 列表失败: {e}")
+        # 兜底
+        if index_name == "NDX100": return ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META"]
+        return ["0700.HK"]
+        
 def process_stock(symbol):
     try:
         data = yf.Ticker(symbol).history(period="1mo", interval="30m")
