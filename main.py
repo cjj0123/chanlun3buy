@@ -143,15 +143,25 @@ def get_tickers(index_name):
 
 def process_stock(symbol):
     try:
-        # A股使用1个月数据扫描，时间跨度足够
-        data = yf.download(symbol, period="2mo", interval="30m", progress=False)
-        if data.empty or len(data) < 50: return None
+        # 将 period 从 2mo 改为 59d，确保在 Yahoo 的 60 天限制内
+        data = yf.download(symbol, period="59d", interval="30m", progress=False, timeout=10)
+        
+        if data.empty or len(data) < 50: 
+            return None
+            
+        # 移除多级索引（针对新版 yfinance 兼容）
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+            
         data.index = data.index.tz_localize(None)
+        
         cs = ChanStrategy(symbol, data)
         if cs.buy_point:
             print(f"找到信号: {symbol}")
             return cs.generate_plot_html()
-    except: pass
+    except Exception as e:
+        # print(f"下载 {symbol} 出错: {e}")
+        pass
     return None
 
 def main():
