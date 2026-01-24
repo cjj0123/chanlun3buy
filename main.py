@@ -1,15 +1,15 @@
-from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import concurrent.futures
-import datetime
 import sys
 import akshare as ak
 import threading
-import requests
+import copy
+import time
+from datetime import datetime, timedelta  # <--- 关键是这一行
 
 # 全局锁：防止 yfinance 并发下载时的内存交叉污染
 download_lock = threading.Lock()
